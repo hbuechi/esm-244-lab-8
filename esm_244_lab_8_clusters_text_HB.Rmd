@@ -1,0 +1,233 @@
+---
+title: "ESM 244 | Lab 8 | Clustering & text analysis"
+author: "Hanna Buechi"
+date: "2/28/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+# General packages
+library(tidyverse)
+library(janitor)
+library(plotly)
+library(RColorBrewer)
+
+# Packages for cluster analysis:
+library(NbClust)
+library(cluster)
+library(factoextra)
+library(dendextend)
+library(ggdendro)
+
+# Packages for text mining/sentiment analysis/word cloud
+library(pdftools)
+library(tidytext)
+library(wordcloud)
+
+```
+
+###Part 1. k-means clustering
+```{r}
+
+iris_nice <- iris %>%
+  clean_names() # AAAAAHHHH THIS IS GREAT! I NEED IT FOR OUR SHINY APP!
+
+ggplot(iris_nice) +
+  geom_point(aes(x = petal_length, y = petal_width, color = species)) # we see that there are species clusters
+
+```
+
+How many clusters do YOU think should exist, R?
+
+```{r}
+
+number_est <- NbClust(iris_nice[1:4], min.nc = 2, max.nc = 10, method = "kmeans") # min and max number of clusters, subset first four columns (not including species)
+# notice that 3 clusters isn't ranked first, 2 is, but we'll probably still go with 3 because that is our conceptual understanding of the number of clusters
+
+```
+
+Perform k-means clustering with 3 groups:
+
+```{r}
+
+iris_km <- kmeans(iris_nice[1:4], 3)
+
+iris_km$size # shows number of observations in clusters 1, 2, and 3
+
+iris_km$centers # tells us for each variable the multivariate center location in four dimensional space
+iris_km$cluster
+
+iris_cl <- data.frame(iris_nice, cluster_no = factor(iris_km$cluster))
+
+# Look at a basic ggplot:
+
+ggplot(iris_cl) +
+  geom_point(aes(x = sepal_length, y = sepal_width, color = cluster_no))
+
+# there is some overlap but don't be alarmed --> we are collapsing multivariate information into two-dimensional space
+
+ggplot(iris_cl) +
+  geom_point(aes(x = petal_length,
+                 y = petal_width,
+                 color = cluster_no,
+                 pch = species)) +
+  scale_color_brewer(palette = "Set3")
+
+# notice that there is still overlap - some virginica irises that cluster with the versicolor irises
+
+## make an interactive plot!
+
+plot_ly(x = iris_cl$petal_length, 
+        y = iris_cl$petal_width, 
+        z = iris_cl$sepal_width, 
+        type = "scatter3d", 
+        color = iris_cl$cluster_no, # like in the ggplot
+        symbol = ~iris_cl$species, # like in the ggplot
+        marker = list(size = 3),
+        colors = "Set1")
+
+# plotly has a lot more power than just this!
+
+```
+
+
+###Part 2. Hierarchical cluster analysis
+
+```{r}
+
+wb_env <- read_csv("wb_env.csv")
+
+# these variables exist on very different scales
+
+# only keep the top twenty GHG emitters (just for our lab for simplifying visualization)
+
+wb_ghg_20 <- wb_env %>% 
+  arrange(-ghg) %>% 
+  head(20)
+
+wb_scaled <- as.data.frame(scale(wb_ghg_20[3:7])) # could you subset first, pipe, and then scale?
+rownames(wb_scaled) <- wb_ghg_20$name # very cool
+
+# dissimilarity matrix: grid of pairwise distances between observations
+
+diss <- dist(wb_scaled, method = "euclidean") # stats package in baseR, simplest dissimilarity matrix (not a dataframe)
+
+# Hierarchical agglomerative clustering by complete linkage
+
+hc_complete <- hclust(diss, method = "complete")
+
+plot(hc_complete) # here's our simmilarity dendogram!
+
+# Divisive analysis clustering - much less common than aglomerative clustering
+# consider everything as one cluster then separates until everything is in its own cluster
+
+hc_div <- diana(diss)
+plot(hc_div)
+
+dend1 <- as.dendrogram(hc_complete)
+dend2 <- as.dendrogram(hc_div)
+
+tanglegram(dend1, dend2) # COOOOOOOL, just for illustrative purposes, though - parallel lines won't show that all of the clustering was the same
+
+ggdendrogram(hc_complete,
+             rotate = TRUE) +
+  theme_minimal()
+
+```
+
+###Part 3. Intro to text analysis: pdftools, stringr, tidytext
+
+```{r}
+
+greta_thunberg <- file.path("greta_thunberg.pdf")
+thunberg_text <- pdf_text(greta_thunberg)
+
+thunberg_df <- data.frame(text = thunberg_text) %>% 
+  mutate(text_full = str_split(text, '\\n')) %>% # two slashes so that R knows that it has to look for \, not that \ is a functional symbol
+  unnest(text_full) # what does unnest() do?
+
+speech_text <- thunberg_df %>% 
+  select(text_full) %>% 
+  slice(4:18) # what did this do?
+
+sep_words <- speech_text %>% 
+  unnest_tokens(word, text_full) # retains original row, too!
+
+word_count <- sep_words %>% 
+  count(word, sort = T)
+  
+# remove stop words
+
+words_stop <- sep_words %>% # without stop words
+  anti_join(stop_words) # these are both dataframes
+
+pos_words <- get_sentiments("afinn") %>% 
+  filter(score == 5 | score == 4) %>% 
+  head(20)
+
+neutral_words <- get_sentiments("afinn") %>% 
+  filter(between(score, -1, 1)) %>% 
+  head(20)
+
+```
+
+Bind some lexicon information to our actual speech words (non stop-words)
+
+```{r}
+
+sent_afinn <- words_stop %>% 
+  inner_join(get_sentiments("afinn"))
+
+sent_nrc <- words_stop %>% 
+  inner_join(get_sentiments("nrc"))
+
+nrc_count <- sent_nrc %>% 
+  group_by(sentiment) %>% 
+  tally()
+
+sent_bing <- words_stop %>% 
+  inner_join(get_sentiments("bing")) # different dictionaries
+
+```
+
+```{r}
+
+wordcloud(words_stop$word,
+          freq = words_stop$n, # need an n column here
+          min.freq = 1,
+          max.words = 65,
+          scale = c(2, 0.1),
+          colors = brewer.pal(3, "Dark2"))
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
